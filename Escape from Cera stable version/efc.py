@@ -1,0 +1,560 @@
+#room 9 <->  , 13 up
+# tag 068 - player 1
+# tag 062 - player 2
+# 192.168.33.39 12000
+import pygame, time, os, sys, random, socket, threading,menu
+from pygame.locals import *
+from menu import *
+#define boundry walls
+TILE_WALLS = ["tl2", "tr", "bl", "br", "tm", "bm", "lm", "rm",
+              "chest", "wall", "stonewall","wall2","w2r"] # 1
+TILE_PUSH = [] # 2 --- unused because rock = object
+TILE_TREASURE = ["chest"] # 4
+
+# all images to be used
+imagesToLoad = ["character.png", "tl2.png", "tr.png", "bl.png", "br.png", "grass.png", "bg.png",
+                "lm.png", "rm.png", "tm.png", "bm.png", "grass2.png", "grass3.png", "wallsm.png",
+                "chest.png", "rock.png", "wall.png", "stone1.png","stone2.png","stone3.png","stone4.png", "stonewall.png","wall2.png","w2r.png"]
+
+# define movement keys here assigning them to names so methods for movement can be used
+P_CONTROLS = [
+    {"up": K_UP, "down": K_DOWN, "left": K_LEFT, "right": K_RIGHT},
+    {"up": K_w, "down": K_s, "left": K_a, "right": K_d}
+]
+
+
+class Level(object):
+    def __init__(self, levelFile):
+        self.players = [Player(x, 0, 0) for x in range(2)]
+        self.chests = 0
+
+        self.load(levelFile)
+    def load(self, level):
+
+	
+        tileMap = {
+            "+": ["grass", "grass", "grass", "grass", "grass2", "grass2", "grass3"],
+            " ": ["stone2","stone1","stone3","stone4","stone2"],
+			"$": "chest", "#": "wall", ".": "wallsm",
+            "<": "tl2", ">": "tr", "v": "bl", "V": "br",
+            ",": "lm", "^": "tm", "/": "rm", "_": "bm", "s":"stonewall", "l":"wall2", "R":"w2r"
+        }
+
+        lsrc = [x.strip() for x in open(os.path.join("Levels", level), "r").readlines()]
+        self.name = lsrc[0]
+        pygame.display.set_caption("Escape from Cera " + self.name)
+        self.xdim, self.ydim = lsrc[1].split()
+        self.xdim = int(self.xdim)
+        self.ydim = int(self.ydim)
+        levLines = []
+        for y in range(self.ydim):
+            levLines.append(lsrc[2 + y])
+
+        self.array = []
+
+        y = 0
+        for line in levLines:
+            levTiles = []
+            x = 0
+            for unit in line:
+                if unit in tileMap:
+                    levTiles.append(Tile(tileMap[unit]))
+                    if unit == "$":
+                        self.chests += 1
+                if unit == "1":
+                    levTiles.append(Tile(tileMap[" "]))
+                    self.players[0].x, self.players[0].y = x, y
+                if unit == "2":
+                    levTiles.append(Tile(tileMap[" "]))
+                    self.players[1].x, self.players[1].y = x, y
+                if unit == "o":
+                    levTiles.append(Tile(tileMap[" "]))
+                    levTiles[-1].obj = Rock()
+                x += 1
+            y += 1
+            self.array.append(levTiles)
+
+    def tick(self, p1y, **kwargs):
+		if "force" in kwargs:
+			self.players[ply].tick(self,force = kwargs["force"])
+			for player in self.players[1:]:
+				player.tick(self)
+		else:
+			for player in self.players:
+				player.tick(self)
+			
+    def blit(self, surf):
+        surf.blit(images["bg.png"], (0, 0))
+        ys = 240 - (32 * self.ydim) / 2
+        xs = 320 - (32 * self.xdim) / 2
+        y = ys
+        for row in self.array:
+            x = xs
+            for cell in row:
+                subrect = Rect(cell.fr[0] * 32, cell.fr[1] * 32, 32, 32)
+                surf.blit(images[cell.sprite], (x, y), subrect)
+                x += 32
+            y += 32
+
+        # Objects over tiles
+        y = ys
+        for row in self.array:
+            x = xs
+            for cell in row:
+                if cell.obj:
+                    dx = cell.obj.dx
+                    dy = cell.obj.dy
+                    surf.blit(images[cell.obj.sprite], (x + dx, y + dy))
+                x += 32
+            y += 32
+		# defining player models from sprite sheet
+        for player in self.players:
+            subrect = Rect(0, 0, 32, 32)
+            if player.uid == 1:
+                subrect.move_ip(96, 0)
+            subrect.move_ip(32 * player.frame, 0)
+            subrect.move_ip(0, 32 * player.dir)
+            surf.blit(images["character.png"], (player.x * 32 + player.dx + xs, player.y * 32 + player.dy + ys), subrect)
+
+#----------------------------------------------------------------------------------------------------------------------------------
+class Player(object):
+
+#set up co-ordinate types and other variables
+    def __init__(self, uid, x, y):
+        self.uid = uid
+        self.x = x
+        self.y = y
+        self.dx = 0
+        self.dy = 0
+        self.gox = x
+        self.goy = y
+        self.goint = 0
+        self.dir = 0
+        self.controls = P_CONTROLS[self.uid] # load up array of control buttons this is to change to motion sensor stuff
+        self.frame = 1
+        self.mov = False
+    def tick(self, level,**kwargs):
+	
+		pygame.event.pump()
+		keystate = pygame.key.get_pressed()
+		
+		try:
+			if "force" in kwargs:
+				keystate = list(keystate)
+				keystate[self.controls[kwargs["force"]]] = True
+				keystate = tuple(keystate)
+		except KeyError as e:
+			pass
+			
+		tmove = abs(self.x-self.gox) + abs(self.y-self.goy)
+		if tmove == 0:
+			for key in self.controls:
+				if keystate[self.controls[key]]:
+					if key == "up":
+						self.dir = 3
+						if level.array[self.y - 1][self.x].bits & 1 == 0:
+							if not (level.array[self.y - 2][self.x].bits & 1 and level.array[self.y - 1][self.x].obj):
+								if not (level.array[self.y - 2][self.x].obj and level.array[self.y - 1][self.x].obj):
+									if not (level.players[not self.uid].y == self.y - 2 and level.players[not self.uid].x == self.x and level.array[self.y - 1][self.x].obj):
+										self.goy -= 1
+					elif key == "down":
+						self.dir= 0
+						if level.array[self.y + 1][self.x].bits & 1 == 0:
+							if not (level.array[self.y + 2][self.x].bits & 1 and level.array[self.y + 1][self.x].obj):
+								if not (level.array[self.y + 2][self.x].obj and level.array[self.y + 1][self.x].obj):
+									if not (level.players[not self.uid].y == self.y + 2 and level.players[not self.uid].x == self.x and level.array[self.y + 1][self.x].obj):
+										self.goy += 1
+					elif key == "left":
+						self.dir = 1
+						if level.array[self.y][self.x - 1].bits & 1 == 0:
+							if not (level.array[self.y][self.x - 2].bits & 1 and level.array[self.y][self.x - 1].obj):
+								if not (level.array[self.y][self.x - 2].obj and level.array[self.y][self.x - 1].obj):
+									if not (level.players[not self.uid].y == self.y and level.players[not self.uid].x == self.x - 2 and level.array[self.y][self.x - 1].obj):
+										self.gox -= 1
+					elif key == "right":
+						self.dir = 2
+						if level.array[self.y][self.x + 1].bits & 1 == 0:
+							if not (level.array[self.y][self.x + 2].bits & 1 and level.array[self.y][self.x + 1].obj):
+								if not (level.array[self.y][self.x + 2].obj and level.array[self.y][self.x + 1].obj):
+									if not (level.players[not self.uid].y == self.y and level.players[not self.uid].x == self.x + 2 and level.array[self.y][self.x + 1].obj):
+										self.gox += 1
+					break
+
+		tmove = abs(self.x-self.gox) + abs(self.y-self.goy)
+
+		if tmove > 1:
+			self.gox = self.x
+			self.goy = self.y
+		elif tmove == 1:
+			self.frame = abs((((int(self.goint / 5.0) + 1) % 4) - 1))
+			tdx = (self.gox - self.x)
+			tdy = (self.goy - self.y)
+			self.dx = tdx * 32 * (self.goint / 19.0)
+			self.dy = tdy * 32 * (self.goint / 19.0)
+			self.goint += 1
+			if self.goint == 20:
+				self.mov = False
+				self.goint = 0
+				if level.array[self.goy][self.gox].sprite == "wallsm.png":
+					level.array[self.goy][self.gox].sprite = "wall.png"
+					level.array[self.goy][self.gox].bits |= 1
+				if level.array[self.goy][self.gox].obj:
+					level.array[self.goy][self.gox].obj.dx = 0
+					level.array[self.goy][self.gox].obj.dy = 0
+					level.array[self.goy+tdy][self.gox+tdx].obj = level.array[self.goy][self.gox].obj
+					level.array[self.goy][self.gox].obj = None
+				self.x = self.gox
+				self.y = self.goy
+				self.dx = 0
+				self.dy = 0
+				self.tmove = 0
+
+
+			else:
+				if level.array[self.goy][self.gox].obj:
+					if not self.mov:
+						self.mov = True
+						PUSHSOUND.play()
+					level.array[self.goy][self.gox].obj.dx = self.dx
+					level.array[self.goy][self.gox].obj.dy = self.dy
+		else:
+			self.frame = 1
+
+		gotTreasure = False
+
+		if self.dir == 0 and level.array[self.y + 1][self.x].bits & 4:
+			level.array[self.y + 1][self.x].fr = (1, 0)
+			level.array[self.y + 1][self.x].bits ^= 4
+			gotTreasure = True
+		if self.dir == 1 and level.array[self.y][self.x - 1].bits & 4:
+			level.array[self.y][self.x - 1].fr = (1, 0)
+			level.array[self.y][self.x - 1].bits ^= 4
+			gotTreasure = True
+		if self.dir == 2 and level.array[self.y][self.x + 1].bits & 4:
+			level.array[self.y][self.x + 1].fr = (1, 0)
+			level.array[self.y][self.x + 1].bits ^= 4
+			gotTreasure = True
+		if self.dir == 3 and level.array[self.y - 1][self.x].bits & 4:
+			level.array[self.y - 1][self.x].fr = (1, 0)
+			level.array[self.y - 1][self.x].bits ^= 4
+			gotTreasure = True
+
+		if gotTreasure:
+			TREASURESOUND.play()
+			level.chests -= 1
+#----------------------------------------------------------------------------------------------------------------------------------
+class Tile(object):
+    def __init__(self, sprite):
+        global TILE_WALLS, TILE_PUSH, TILE_TREASURE
+        if type(sprite) == list: sprite = random.choice(sprite)
+        self.sprite = sprite + ".png"
+        self.bits = 0
+        if sprite in TILE_WALLS: self.bits |= 1
+        if sprite in TILE_PUSH: self.bits |= 2
+        if sprite in TILE_TREASURE: self.bits |= 4
+        self.fr = (0, 0)
+        self.obj = None
+#----------------------------------------------------------------------------------------------------------------------------------
+class Rock(object):
+    def __init__(self):
+        self.sprite = "rock.png"
+        self.dx = 0
+        self.dy = 0
+#----------------------------------------------------------------------------------------------------------------------------------
+class CordParser(threading.Thread):
+	def __init__(self):
+		threading.Thread.__init__(self)
+		self.xNew = None
+		self.zNew = None
+		#Ubisense server ip
+		UBISERVER="192.168.33.39"
+		#Ubisense server port
+		UBIPORT=12000
+		clientSocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+		clientSocket.connect((UBISERVER,UBIPORT))
+		self.sock = clientSocket.makefile("rb") #buffered file (for readline)
+	
+	def run(self):
+		while(True):
+			data = self.sock.readline()
+			self.tagIdPlayer1 = data[25:28]
+			if self.tagIdPlayer1 == "068":	
+				dataPrime = data.split()			
+				z = dataPrime[3]
+				x = dataPrime[1]
+				
+				zP = z[0:3]
+				xP = x[0:4]
+			#	print dataPrime
+				self.xNew = float(xP)
+				self.zNew = float(zP)
+#----------------------------------------------------------------------------------------------------------------------------------
+class CordParser2(threading.Thread):
+	def __init__(self):
+		threading.Thread.__init__(self)
+		self.xNew2 = None
+		self.zNew2 = None
+		#Ubisense server ip
+		UBISERVER="192.168.33.39"
+		#Ubisense server port
+		UBIPORT=12000
+		clientSocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+		clientSocket.connect((UBISERVER,UBIPORT))
+		self.sock = clientSocket.makefile("rb") #buffered file (for readline)
+	
+	def run(self):
+		while(True):
+			data2 = self.sock.readline()
+			self.tagIdPlayer2 = data2[25:28]
+			if self.tagIdPlayer2 == "061":	
+				dataPrime2 = data2.split()			
+				z2 = dataPrime2[3]
+				x2 = dataPrime2[1]
+				
+				zP2 = z2[0:3]
+				xP2 = x2[0:4]
+			#	print dataPrime
+				self.xNew2 = float(xP2)
+				self.zNew2 = float(zP2)				
+#-----------------------------Define main parameters of the system------------------------------------------------------------
+pygame.mixer.pre_init(44100, -16, 2, 1024)
+pygame.init()
+pygame.mixer.music.load("music.mp3")
+pygame.mixer.music.play(-1)
+#screen = pygame.display.set_mode((640, 480))#, FULLSCREEN)
+screen = pygame.display.set_mode((640, 480), FULLSCREEN)
+pygame.mouse.set_visible(0)
+# define sounds ingame
+PUSHSOUND = pygame.mixer.Sound("push.wav")
+TREASURESOUND = pygame.mixer.Sound("Treasure.ogg")
+WINSOUND = pygame.mixer.Sound("Orb.ogg")
+#----------------------ubisense motion code-------------------------------------------------
+counter = 0
+counter2 = 0
+xOld = 0.0
+zOld = 0.0
+xOld2 = 0.0
+zOld2 = 0.0
+move = ""
+ply = 0
+parser1 = CordParser()
+parser2 = CordParser2()
+parser1.start()
+parser2.start()
+xn = 0.0
+zn = 0.0
+xn2 = 0.0
+zn2 = 0.0
+images = {}
+for im in imagesToLoad:
+    images[im] = pygame.image.load(im).convert_alpha()
+
+pygame.display.set_caption("Escape from Cera")
+
+bkg = pygame.image.load('bg2.png')
+screen.blit(bkg, (0, 0))
+pygame.display.flip()
+#-----------------levels----------------------------------------------------------
+levels = os.listdir("Levels")
+levels.sort()
+i = len(levels)
+L = 0
+#------------------------menu-----------------------------------------------
+menu = cMenu(50, 50, 20, 5, 'vertical', 100, screen,
+               [('Start Game',5, None),
+                ('Load Level',1, None),
+                ('Instructions',2, None),
+                ('Exit',4, None)])
+				
+menu1 = cMenu(50, 50, 20, 5, 'vertical', 4, screen,
+                [('Previous Menu', 0, None),
+                 ('Choose level',3, None),
+                 ('Exit',4, None)])		
+levelMenu = []
+
+levelMenu.append(('Previous Menu', 0, None)	)
+
+for j in range(0, i):
+	p = j+6
+	levelMenu.append(('Level%d '%j,p, None))
+		
+levelMenu.append(('Exit',4, None))
+menu2 = cMenu(50, 50, 20, 5, 'vertical', 4, screen, levelMenu)	
+
+menu3 = cMenu(50, 50, 20, 5, 'vertical', 4, screen,
+                [('Previous Menu', 0, None),
+                 ('Exit',4, None)])			
+				 
+#----------------------set the positions of menus on screen----------------------------------------
+menu.set_center(True, True)
+menu.set_alignment('center', 'center')
+menu1.set_center(True, True)
+menu1.set_alignment('center', 'center')
+menu2.set_center(True, True)
+menu2.set_alignment('center', 'center')
+menu3.set_center(True, True)
+menu3.set_alignment('center', 'center')
+state = 0
+prev_state = 1
+rect_list = []
+
+# Ignore mouse motion (greatly reduces resources when not needed)
+pygame.event.set_blocked(pygame.MOUSEMOTION)
+
+while 1:
+  # Check if the states changed
+  # the queue to force the menu to be shown at least once
+	if prev_state != state:
+		pygame.event.post(pygame.event.Event(EVENT_CHANGE_STATE, key = 0))
+		prev_state = state
+
+		if state in [0,1,2,3]:
+			# Reset the screen before going to the next menu,  caption at the bottom 
+			screen.blit(bkg, (0, 0))
+			screen.blit(TEXT[state][0], (15, 430))
+			screen.blit(TEXT[state][1], (15, 410))
+			screen.blit(TEXT[state][2], (15, 390))
+			screen.blit(TEXT[state][2], (15, 390))
+			pygame.display.flip()
+	# Get the next event
+	e = pygame.event.wait()
+
+	if e.type == pygame.KEYDOWN or e.type == EVENT_CHANGE_STATE:
+		if state == 0:
+			rect_list, state = menu.update(e, state)
+		elif state == 1:
+			rect_list, state = menu1.update(e, state)
+		elif state == 5:
+	#--------------------------------start game-----------------------------------------------------------------------------
+			print 'Start Game!'
+			levels = os.listdir("Levels")
+			levels.sort()
+			levels = levels[L:]
+
+			for level in levels:
+			    curLev = Level(level)
+			    inLev = True	
+			    while inLev:
+				#--------------------------p1---------------------------------------	
+					move = ""
+					ply = 0
+					if parser1.xNew and parser1.zNew:
+						if counter == 0:
+							xOld = parser1.xNew
+							zOld = parser1.zNew
+							counter = 1
+						else:
+							if xOld > parser1.xNew: # new value decrementing					
+								xn = xOld - parser1.xNew
+							elif xOld < parser1.xNew: # new value incrementing
+								xn = parser1.xNew - xOld
+							
+							if zOld > parser1.zNew: # new value decrementing					
+								zn = zOld - parser1.zNew
+							elif zOld < parser1.zNew: # new value incrementing
+								zn = parser1.zNew - zOld
+
+					if xn >= (zn+0.27):
+						ply = 0
+						print "P1 top - down"
+						if xOld < parser1.xNew:
+							move = "down"
+							xOld = parser1.xNew
+						elif xOld > parser1.xNew:
+							move = "up"
+							xOld = parser1.xNew
+					elif zn >= (xn+0.27):
+						print "p1 left - right"
+						ply = 0
+						if zOld < parser1.zNew:
+							move ="right"
+							zOld = parser1.zNew
+						elif zOld > parser1.zNew:
+							move = "left"
+							zOld = parser1.zNew
+				#-----------------------------p2------------------------------------		
+					if parser2.xNew2 and parser2.zNew2:
+						if counter2 == 0:
+							xOld2 = parser2.xNew2
+							zOld2 = parser2.zNew2
+							counter2 = 1
+						else:
+							if xOld2 > parser2.xNew2: # new value decrementing					
+								xn2 = xOld2 - parser2.xNew2
+							elif xOld2 < parser2.xNew2: # new value incrementing
+								xn2 = parser2.xNew2 - xOld2
+							
+							if zOld2 > parser2.zNew2: # new value decrementing					
+								zn2 = zOld2 - parser2.zNew2
+							elif zOld < parser2.zNew2: # new value incrementing
+								zn2 = parser2.zNew2 - zOld2
+
+					if xn2 >= (zn2+0.28):
+						print "p2 top - down"
+						ply = 1
+						if xOld2 < parser2.xNew2:
+							move = "down"
+							xOld2 = parser2.xNew2
+						elif xOld2 > parser2.xNew2:
+							move = "up"
+							xOld2 = parser2.xNew2
+					elif zn2 >= (xn2+0.28):
+						print "p2 left - right"
+						ply = 1
+						if zOld2 < parser2.zNew2:
+							move ="right"
+							zOld2 = parser2.zNew2
+						elif zOld2 > parser2.zNew2:
+							move = "left"
+							zOld2 = parser2.zNew2
+				#-----------------------------------------------------------------	
+					if move != "":
+						print move
+					curLev.tick(ply,force = move)
+					curLev.blit(screen)
+					# check if chests in current level are still active if not progress, 
+					if curLev.players[0].x == curLev.players[1].x and curLev.players[0].y == curLev.players[1].y and curLev.chests == 0:
+						inLev = False
+						for player in curLev.players:
+							player.dx = 0; player.dy = 0; player.goint = 0; player.dir = 0
+					pygame.display.flip()
+					pygame.event.pump()
+					time.sleep(0.009)
+					for ev in pygame.event.get():
+						if ev.type == QUIT:
+							pygame.quit()
+							sys.exit(0)
+						if ev.type == KEYDOWN:
+							if ev.key == K_r:
+								curLev = Level(level)
+							if ev.key == K_ESCAPE:
+								pygame.quit()
+								sys.exit(0)
+			    # Level complete
+			    WINSOUND.play()
+	#----------------------------------end of start game----------------------------------------------------------------------	
+		elif state == 2:
+			rect_list, state = menu3.update(e, state)
+		elif state == 3:
+			rect_list, state = menu2.update(e, state)
+		elif state == 4 :
+			print 'Exit!'
+			pygame.quit()
+			sys.exit()
+	#-----------------------------------------player level choice-----------------------------------------------------------------	
+		else:	
+			for j in range(i):
+				p = j+6
+				if state == p:
+					L = j
+					state = 5
+
+  # Quit if the user presses the exit button
+	if e.type == pygame.QUIT:
+		pygame.quit()
+		sys.exit()
+
+  # Update the screen
+	pygame.display.update(rect_list)
+
+#--------------EOF---------------------------------------------------------
